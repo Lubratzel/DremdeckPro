@@ -16,29 +16,58 @@ class StreamDeckGUI(ctk.CTk):
     def __init__(self):
         super().__init__()
         self.title("Hex Deck Pro - Workspace")
-        self.geometry("1100x850")
+        self.geometry("1150x850")
         
-        # 1. Lade gespeicherte GUI-Settings (Theme)
         self.load_gui_settings()
 
         self.ser = None
         self.selected_idx = None
 
-        # --- HAUPT TABS ---
-        self.tabview = ctk.CTkTabview(self)
-        self.tabview.pack(padx=20, pady=20, fill="both", expand=True)
+        # --- HAUPT LAYOUT ---
+        # 1. Rechte Sidebar für die Navigation (Tabs Ersatz)
+        self.nav_sidebar = ctk.CTkFrame(self, width=120, corner_radius=0)
+        self.nav_sidebar.pack(side="left", fill="y")
+        
+        # 2. Container für den Inhalt (wechselt zwischen Profile und Settings)
+        self.content_container = ctk.CTkFrame(self, fg_color="transparent")
+        self.content_container.pack(side="right", fill="both", expand=True)
 
-        self.tab_profile = self.tabview.add("🎛 Profile")
-        self.tab_settings = self.tabview.add("⚙ Settings")
+        # Navigations-Buttons in der Sidebar
+        self.btn_profile = ctk.CTkButton(self.nav_sidebar, text="🙍 Profile", 
+                                         command=self.show_profile, corner_radius=0, height=50)
+        self.btn_profile.pack(fill="x", pady=(20, 5), padx=5)
 
-        # --- PROFILE TAB ---
+        self.btn_settings = ctk.CTkButton(self.nav_sidebar, text="⚙ Settings", 
+                                          command=self.show_settings, corner_radius=0, height=50)
+        self.btn_settings.pack(fill="x", pady=5, padx=5)
+
+        # --- TABS INITIALISIEREN ---
+        # Wir erstellen zwei Frames, die wir einfach übereinander legen oder verstecken
+        self.tab_profile = ctk.CTkFrame(self.content_container, fg_color="transparent")
+        self.tab_settings = ctk.CTkFrame(self.content_container, fg_color="transparent")
+
+        # Setup Funktionen aufrufen (wie vorher)
         self.setup_profile_tab()
-
-        # --- SETTINGS TAB ---
         self.setup_settings_tab()
 
-        # Auto-Connect starten
+        # Start-Tab anzeigen
+        self.show_profile()
+
         self.after(100, self.auto_connect)
+
+    def show_profile(self):
+        """Zeigt den Profil-Tab und versteckt Settings"""
+        self.tab_settings.pack_forget()
+        self.tab_profile.pack(fill="both", expand=True)
+        self.btn_profile.configure(fg_color=("gray75", "gray25")) # Optisches Feedback
+        self.btn_settings.configure(fg_color="transparent")
+
+    def show_settings(self):
+        """Zeigt den Settings-Tab und versteckt Profile"""
+        self.tab_profile.pack_forget()
+        self.tab_settings.pack(fill="both", expand=True)
+        self.btn_settings.configure(fg_color=("gray75", "gray25"))
+        self.btn_profile.configure(fg_color="transparent")
 
     def load_gui_settings(self):
         """Liest die Theme-Einstellungen aus der JSON Datei"""
@@ -67,16 +96,23 @@ class StreamDeckGUI(ctk.CTk):
             json.dump(settings, f)
 
     def setup_profile_tab(self):
-        # Sidebar & Main (wie zuvor)
+        # Sidebar (Rechts)
         self.sidebar = ctk.CTkFrame(self.tab_profile, width=320)
         self.sidebar.pack(side="right", fill="y", padx=10, pady=10)
+        
+        # Hauptbereich (Links)
         self.main_area = ctk.CTkFrame(self.tab_profile, fg_color="transparent")
         self.main_area.pack(side="left", fill="both", expand=True)
 
+        # Container für die Buttons, exakt mittig
+        self.button_container = ctk.CTkFrame(self.main_area, fg_color="transparent")
+        self.button_container.place(relx=0.5, rely=0.5, anchor="center")
+
+        # Sidebar Elemente (Status, Listen, etc.)
         self.status_label = ctk.CTkLabel(self.sidebar, text="Suche Pico...", text_color="orange")
         self.status_label.pack(pady=10)
 
-        # Listen & Menüs
+        # ... (Deine Scroll-Listen und Menüs in der Sidebar) ...
         ctk.CTkLabel(self.sidebar, text="⌨ Standard Tasten").pack()
         self.standard_scroll = ctk.CTkScrollableFrame(self.sidebar, width=250, height=200)
         self.standard_scroll.pack(pady=5)
@@ -88,6 +124,8 @@ class StreamDeckGUI(ctk.CTk):
         self.key_btns = {}
         self.fill_lists()
 
+
+        ctk.CTkLabel(self.sidebar, text="🎨 Farbe auswählen:", font=("Arial", 13, "bold")).pack(pady=(15, 0))
         self.c_menu = ctk.CTkComboBox(self.sidebar, values=list(COLOR_MAP.keys()), command=self.save_c, state="readonly")
         self.c_menu.pack(pady=10)
 
@@ -97,32 +135,40 @@ class StreamDeckGUI(ctk.CTk):
         ctk.CTkCheckBox(self.mod_frame, text="SHIFT", variable=self.shift_var, command=self.save_mod).pack(pady=2)
         ctk.CTkCheckBox(self.mod_frame, text="ALT", variable=self.alt_var, command=self.save_mod).pack(pady=2)
 
+        ctk.CTkLabel(self.sidebar, text="☀️ Helligkeit:", font=("Arial", 13, "bold")).pack(side="bottom", pady=(10, 0))
         self.bright_slider = ctk.CTkSlider(self.sidebar, from_=0, to=255, command=self.update_bright)
         self.bright_slider.pack(side="bottom", pady=20)
 
-    
-      # Hexagon Buttons
-        positions = [
-            (250, 60), (370, 60), 
-            (430, 170), (310, 170),(190, 170) , 
-            (250, 280), (370, 280)]
-        self.btns = []
-        
-        # Bestimme initiale Schriftfarbe basierend auf dem Theme
-        current_mode = ctk.get_appearance_mode()
-        text_color = "white" if current_mode == "Dark" else "black"
+        for col in range(6):
+            self.button_container.grid_columnconfigure(col, weight=1, uniform="group1")
 
-        for i, (x, y) in enumerate(positions):
-            # Schriftgröße auf 55 erhöht für große Icons
-            b = ctk.CTkButton(self.main_area, 
+        grid_positions = [
+            (0, 1), (0, 3),         # Oben
+            (1, 0), (1, 2), (1, 4), # Mitte (Versetzt)
+            (2, 1), (2, 2)          # Unten (Hier Korrektur auf 1 und 3 für Symmetrie)
+        ]
+        
+        # Falls die untere Reihe im Bild auch versetzt sein soll wie die obere:
+        # Nutze (2, 1) und (2, 3) statt (2, 1) und (2, 2)
+        grid_positions[5] = (2, 1)
+        grid_positions[6] = (2, 3)
+
+        self.btns = []
+        text_color = "white" if ctk.get_appearance_mode() == "Dark" else "black"
+
+        for i, (r, c) in enumerate(grid_positions):
+            b = ctk.CTkButton(self.button_container, 
                               text="?", 
-                              width=110, 
-                              height=100, 
-                              corner_radius=25, 
-                              font=("Arial", 40), # Hier die Größe für die Icons
-                              text_color=text_color, # Dynamische Farbe
+                              width=140, 
+                              height=140, 
+                              corner_radius=10, 
+                              font=("Arial", 60), 
+                              text_color=text_color,
                               command=lambda idx=i: self.select(idx))
-            b.place(x=x, y=y)
+            
+            # Wichtig: sticky="nsew" sorgt dafür, dass der Button den Platz im Grid voll ausfüllt
+            b.grid(row=r, column=c, columnspan=2, padx=10, pady=10, sticky="nsew")
+            
             b.current_key, b.current_color, b.current_mod = "F13", "Aus", 0
             self.btns.append(b)
             
@@ -308,3 +354,4 @@ class StreamDeckGUI(ctk.CTk):
 if __name__ == "__main__":
     app = StreamDeckGUI()
     app.mainloop()
+
