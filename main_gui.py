@@ -4,73 +4,136 @@ import serial.tools.list_ports
 import time
 import json
 import os
+import requests
+import threading
 from keys_config import KEY_MAP, COLOR_MAP, ICON_MAP
 
 # DATEIPFAD FÜR SETTINGS
 SETTINGS_FILE = "gui_settings.json"
 BAUD_RATE = 115200
 REV_KEY = {v: k for k, v in KEY_MAP.items()}
-MEDIA_KEYS_CODES = [127, 128, 129, 205, 206, 207, 181, 111, 112]
+MEDIA_KEYWORDS = ["LAUTER", "LEISER", "STUMM", "PLAY", "PAUSE", "NÄCHSTER", "VORHERIGER", "STOP", "HELLIGKEIT"]
+SYSTEM_KEYWORDS = ["F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12",
+                   "F13", "F14", "F15", "F16", "F17", "F18", "F19", "WIN", "ALT", "STRG", "SHIFT"]
+
 
 class StreamDeckGUI(ctk.CTk):
     def __init__(self):
         super().__init__()
         self.title("Hex Deck Pro - Workspace")
         self.geometry("1150x850")
-        
+
         self.load_gui_settings()
 
         self.ser = None
         self.selected_idx = None
 
         # --- HAUPT LAYOUT ---
-        # 1. Rechte Sidebar für die Navigation (Tabs Ersatz)
         self.nav_sidebar = ctk.CTkFrame(self, width=120, corner_radius=0)
         self.nav_sidebar.pack(side="left", fill="y")
-        
-        # 2. Container für den Inhalt (wechselt zwischen Profile und Settings)
+
         self.content_container = ctk.CTkFrame(self, fg_color="transparent")
         self.content_container.pack(side="right", fill="both", expand=True)
 
-        # Navigations-Buttons in der Sidebar
-        self.btn_profile = ctk.CTkButton(self.nav_sidebar, text="🙍 Profile", 
+        # Navigations-Buttons
+        self.btn_profile = ctk.CTkButton(self.nav_sidebar, text="🙍 Profile",
                                          command=self.show_profile, corner_radius=0, height=50)
         self.btn_profile.pack(fill="x", pady=(20, 5), padx=5)
 
-        self.btn_settings = ctk.CTkButton(self.nav_sidebar, text="⚙ Settings", 
+        self.btn_settings = ctk.CTkButton(self.nav_sidebar, text="⚙ Settings",
                                           command=self.show_settings, corner_radius=0, height=50)
         self.btn_settings.pack(fill="x", pady=5, padx=5)
 
-        # --- TABS INITIALISIEREN ---
-        # Wir erstellen zwei Frames, die wir einfach übereinander legen oder verstecken
+        # Tabs
         self.tab_profile = ctk.CTkFrame(self.content_container, fg_color="transparent")
         self.tab_settings = ctk.CTkFrame(self.content_container, fg_color="transparent")
 
-        # Setup Funktionen aufrufen (wie vorher)
         self.setup_profile_tab()
         self.setup_settings_tab()
-
-        # Start-Tab anzeigen
+        self.fill_lists()
         self.show_profile()
 
         self.after(100, self.auto_connect)
+        threading.Thread(target=self.listen_to_pico, daemon=True).start()
 
     def show_profile(self):
-        """Zeigt den Profil-Tab und versteckt Settings"""
         self.tab_settings.pack_forget()
         self.tab_profile.pack(fill="both", expand=True)
-        self.btn_profile.configure(fg_color=("gray75", "gray25")) # Optisches Feedback
+        self.btn_profile.configure(fg_color=("gray75", "gray25"))
         self.btn_settings.configure(fg_color="transparent")
 
+    def listen_to_pico(self):
+        while True:
+            if self.ser and self.ser.is_open:
+                try:
+                    if self.ser.in_waiting > 0:
+                        line = self.ser.readline().decode().strip()
+                        if line.startswith("PRESSED:"):
+                            idx = int(line.split(":")[1])
+                            self.trigger_webhook(idx)
+                except:
+                    pass
+            time.sleep(0.01)
+
+    def trigger_webhook(self, idx):
+        if os.path.exists(SETTINGS_FILE):
+            try:
+                with open(SETTINGS_FILE, "r") as f:
+                    settings = json.load(f)
+                    webhooks = settings.get("webhooks", {})
+                    config = webhooks.get(str(idx), {})
+
+                    if isinstance(config, dict) and config.get("active", False):
+                        url = config.get("url", "")
+                        if url and url.startswith("http"):
+                            def make_request():
+                                try:
+                                    r = requests.post(url, timeout=5)
+                                    print(f"Webhook {idx} Erfolg! Status: {r.status_code}")
+                                except Exception as e:
+                                    print(f"Webhook Fehler: {e}")
+
+                            threading.Thread(target=make_request, daemon=True).start()
+            except Exception as e:
+                print(f"Fehler beim Webhook-Trigger: {e}")
+
+    def toggle_webhook_ui(self):
+        if self.webhook_active_var.get():
+            self.webhook_entry.pack(pady=5)
+            self.btn_save_webhook.pack(pady=5)
+        else:
+            self.webhook_entry.pack_forget()
+            self.btn_save_webhook.pack_forget()
+
+    def save_webhook(self):
+        if self.selected_idx is None: return
+        url = self.webhook_entry.get()
+        active = self.webhook_active_var.get()
+
+        settings = {}
+        if os.path.exists(SETTINGS_FILE):
+            try:
+                with open(SETTINGS_FILE, "r") as f:
+                    settings = json.load(f)
+            except:
+                pass
+
+        if "webhooks" not in settings: settings["webhooks"] = {}
+        settings["webhooks"][str(self.selected_idx)] = {"url": url, "active": active}
+
+        with open(SETTINGS_FILE, "w") as f:
+            json.dump(settings, f)
+
+        self.toggle_webhook_ui()  # UI aktualisieren
+        self.status_label.configure(text="Gespeichert!", text_color="green")
+
     def show_settings(self):
-        """Zeigt den Settings-Tab und versteckt Profile"""
         self.tab_profile.pack_forget()
         self.tab_settings.pack(fill="both", expand=True)
         self.btn_settings.configure(fg_color=("gray75", "gray25"))
         self.btn_profile.configure(fg_color="transparent")
 
     def load_gui_settings(self):
-        """Liest die Theme-Einstellungen aus der JSON Datei"""
         if os.path.exists(SETTINGS_FILE):
             try:
                 with open(SETTINGS_FILE, "r") as f:
@@ -83,198 +146,159 @@ class StreamDeckGUI(ctk.CTk):
             ctk.set_appearance_mode("System")
 
     def save_gui_settings(self, key, value):
-        """Speichert eine Einstellung in die JSON Datei"""
         settings = {}
         if os.path.exists(SETTINGS_FILE):
             try:
                 with open(SETTINGS_FILE, "r") as f:
                     settings = json.load(f)
-            except: pass
-        
+            except:
+                pass
         settings[key] = value
         with open(SETTINGS_FILE, "w") as f:
             json.dump(settings, f)
 
     def setup_profile_tab(self):
-        # Sidebar (Rechts)
-        self.sidebar = ctk.CTkFrame(self.tab_profile, width=320)
-        self.sidebar.pack(side="right", fill="y", padx=10, pady=10)
-        
-        # Hauptbereich (Links)
-        self.main_area = ctk.CTkFrame(self.tab_profile, fg_color="transparent")
+        self.profile_container = ctk.CTkFrame(self.tab_profile, fg_color="transparent")
+        self.profile_container.pack(fill="both", expand=True)
+        self.main_area = ctk.CTkFrame(self.profile_container, fg_color="transparent")
         self.main_area.pack(side="left", fill="both", expand=True)
+        self.sidebar = ctk.CTkFrame(self.profile_container, width=320, border_width=2, border_color=("#1f538d"))
 
-        # Container für die Buttons, exakt mittig
+        # Button Grid (Hex)
         self.button_container = ctk.CTkFrame(self.main_area, fg_color="transparent")
-        self.button_container.place(relx=0.5, rely=0.5, anchor="center")
-
-        # Sidebar Elemente (Status, Listen, etc.)
-        self.status_label = ctk.CTkLabel(self.sidebar, text="Suche Pico...", text_color="orange")
-        self.status_label.pack(pady=10)
-
-        # ... (Deine Scroll-Listen und Menüs in der Sidebar) ...
-        ctk.CTkLabel(self.sidebar, text="⌨ Standard Tasten").pack()
-        self.standard_scroll = ctk.CTkScrollableFrame(self.sidebar, width=250, height=200)
-        self.standard_scroll.pack(pady=5)
-        
-        ctk.CTkLabel(self.sidebar, text="🪟 Windows Funktionen").pack()
-        self.media_scroll = ctk.CTkScrollableFrame(self.sidebar, width=250, height=150)
-        self.media_scroll.pack(pady=5)
-
-        self.key_btns = {}
-        self.fill_lists()
-
-
-        ctk.CTkLabel(self.sidebar, text="🎨 Farbe auswählen:", font=("Arial", 13, "bold")).pack(pady=(15, 0))
-        self.c_menu = ctk.CTkComboBox(self.sidebar, values=list(COLOR_MAP.keys()), command=self.save_c, state="readonly")
-        self.c_menu.pack(pady=10)
-
-        self.mod_frame = ctk.CTkFrame(self.sidebar, fg_color="#2b2b2b", corner_radius=10)
-        self.ctrl_var = ctk.BooleanVar(); self.shift_var = ctk.BooleanVar(); self.alt_var = ctk.BooleanVar()
-        ctk.CTkCheckBox(self.mod_frame, text="STRG", variable=self.ctrl_var, command=self.save_mod).pack(pady=2)
-        ctk.CTkCheckBox(self.mod_frame, text="SHIFT", variable=self.shift_var, command=self.save_mod).pack(pady=2)
-        ctk.CTkCheckBox(self.mod_frame, text="ALT", variable=self.alt_var, command=self.save_mod).pack(pady=2)
-
-        ctk.CTkLabel(self.sidebar, text="☀️ Helligkeit:", font=("Arial", 13, "bold")).pack(side="bottom", pady=(10, 0))
-        self.bright_slider = ctk.CTkSlider(self.sidebar, from_=0, to=255, command=self.update_bright)
-        self.bright_slider.pack(side="bottom", pady=20)
-
-        for col in range(6):
-            self.button_container.grid_columnconfigure(col, weight=1, uniform="group1")
-
-        grid_positions = [
-            (0, 1), (0, 3),         # Oben
-            (1, 0), (1, 2), (1, 4), # Mitte (Versetzt)
-            (2, 1), (2, 2)          # Unten (Hier Korrektur auf 1 und 3 für Symmetrie)
-        ]
-        
-        # Falls die untere Reihe im Bild auch versetzt sein soll wie die obere:
-        # Nutze (2, 1) und (2, 3) statt (2, 1) und (2, 2)
-        grid_positions[5] = (2, 1)
-        grid_positions[6] = (2, 3)
-
+        self.button_container.place(relx=0.5, rely=0.45, anchor="center")
+        grid_positions = [(0, 1), (0, 3), (1, 4), (1, 2), (1, 0), (2, 1), (2, 3)]
         self.btns = []
-        text_color = "white" if ctk.get_appearance_mode() == "Dark" else "black"
-
         for i, (r, c) in enumerate(grid_positions):
-            b = ctk.CTkButton(self.button_container, 
-                              text="?", 
-                              width=140, 
-                              height=140, 
-                              corner_radius=10, 
-                              font=("Arial", 60), 
-                              text_color=text_color,
-                              command=lambda idx=i: self.select(idx))
-            
-            # Wichtig: sticky="nsew" sorgt dafür, dass der Button den Platz im Grid voll ausfüllt
-            b.grid(row=r, column=c, columnspan=2, padx=10, pady=10, sticky="nsew")
-            
+            b = ctk.CTkButton(self.button_container, text="?", width=140, height=140, corner_radius=40,
+                              font=("Arial", 60), command=lambda idx=i: self.select(idx))
+            b.grid(row=r, column=c, columnspan=2, padx=10, pady=10)
             b.current_key, b.current_color, b.current_mod = "F13", "Aus", 0
             self.btns.append(b)
-            
+
+        # --- SIDEBAR SCROLLBEREICHE (SORTIERT) ---
+        # 1. Normale Tasten
+        ctk.CTkLabel(self.sidebar, text="⌨ Standard Tasten", font=("Arial", 13, "bold")).pack(pady=(10, 0))
+        self.standard_scroll = ctk.CTkScrollableFrame(self.sidebar, width=250, height=150)
+        self.standard_scroll.pack(pady=5, padx=10)
+
+        # 2. Windows / System Tasten
+        ctk.CTkLabel(self.sidebar, text="🪟 Windows / System", font=("Arial", 13, "bold")).pack(pady=(10, 0))
+        self.system_scroll = ctk.CTkScrollableFrame(self.sidebar, width=250, height=150)
+        self.system_scroll.pack(pady=5, padx=10)
+
+        # 3. Media Tasten
+        ctk.CTkLabel(self.sidebar, text="🎵 Media Steuerung", font=("Arial", 13, "bold")).pack(pady=(10, 0))
+        self.media_scroll = ctk.CTkScrollableFrame(self.sidebar, width=250, height=100)
+        self.media_scroll.pack(pady=5, padx=10)
+
+        # Rest der Sidebar (Farbe, Modifikatoren, Webhook)
+        ctk.CTkLabel(self.sidebar, text="🎨 Farbe:", font=("Arial", 13, "bold")).pack(pady=(10, 0))
+        self.c_menu = ctk.CTkComboBox(self.sidebar, values=list(COLOR_MAP.keys()), command=self.save_c, state="readonly")
+        self.c_menu.pack(pady=5)
+
+        self.webhook_active_var = ctk.BooleanVar(value=False)
+        self.webhook_checkbox = ctk.CTkCheckBox(self.sidebar, text="Webhook nutzen", variable=self.webhook_active_var, command=self.save_webhook)
+        self.webhook_checkbox.pack(pady=10)
+        self.webhook_entry = ctk.CTkEntry(self.sidebar, placeholder_text="http://...", width=250)
+        self.btn_save_webhook = ctk.CTkButton(self.sidebar, text="URL Speichern", command=self.save_webhook)
+
+        # Status & Brightness
+        self.bottom_bar = ctk.CTkFrame(self.main_area, height=80, fg_color="transparent")
+        self.bottom_bar.pack(side="bottom", fill="x", padx=20, pady=10)
+        self.status_label = ctk.CTkLabel(self.bottom_bar, text="Suche Pico...", text_color="orange")
+        self.status_label.pack(side="left", padx=20)
+        self.bright_slider = ctk.CTkSlider(self.bottom_bar, from_=0, to=255, width=300, command=self.update_bright)
+        self.bright_slider.pack(side="right", padx=20)
+
+    def animate_sidebar_open(self):
+        current_x = 1.3
+        self.sidebar.place(relx=current_x, rely=0, anchor="ne", relheight=1.0)
+
+        def step():
+            nonlocal current_x
+            if current_x > 1.0:
+                current_x -= 0.04;
+                self.sidebar.place(relx=current_x);
+                self.after(5, step)
+
+        step()
+
+    def hide_sidebar(self):
+        if self.sidebar.winfo_manager() == "place":
+            current_x = 1.0
+
+            def step():
+                nonlocal current_x
+                if current_x < 1.4:
+                    current_x += 0.05;
+                    self.sidebar.place(relx=current_x);
+                    self.after(5, step)
+                else:
+                    self.sidebar.place_forget();
+                    self.selected_idx = None
+                    for b in self.btns: b.configure(border_width=0)
+
+            step()
+
+    def select(self, idx):
+        if self.sidebar.winfo_manager() != "place": self.animate_sidebar_open()
+        self.selected_idx = idx
+        for i, b in enumerate(self.btns): b.configure(border_width=4 if i == idx else 0, border_color="#1f538d")
+
+        # Webhook laden
+        if os.path.exists(SETTINGS_FILE):
+            try:
+                with open(SETTINGS_FILE, "r") as f:
+                    config = json.load(f).get("webhooks", {}).get(str(idx), {})
+                    self.webhook_entry.delete(0, "end")
+                    if isinstance(config, dict):
+                        self.webhook_entry.insert(0, config.get("url", ""))
+                        self.webhook_active_var.set(config.get("active", False))
+            except:
+                pass
+        self.toggle_webhook_ui()
 
     def change_theme(self, new_theme):
-        """Wechselt das Theme und erzwingt sofortige Farbanpassung der Schrift"""
-        ctk.set_appearance_mode(new_theme)
+        ctk.set_appearance_mode(new_theme);
         self.save_gui_settings("appearance_mode", new_theme)
-        
-        # Winzige Verzögerung, damit CustomTkinter den Mode intern aktualisieren kann
         self.after(10, self.update_button_colors)
-            
-    def update_button_colors(self):
-        """Prüft den aktuellen Modus und färbt alle Texte um"""
-        # ctk.get_appearance_mode() gibt jetzt den tatsächlichen Status (Light/Dark)
-        current_actual_mode = ctk.get_appearance_mode()
-        new_text_color = "white" if current_actual_mode == "Dark" else "black"
-        
-        # 1. Große Hex-Buttons anpassen
-        for b in self.btns:
-            b.configure(text_color=new_text_color)
-            
-        # 2. Buttons in den Scroll-Listen anpassen
-        for btn in self.key_btns.values():
-            btn.configure(text_color=new_text_color)
-            
-        # 3. Status Label anpassen (optional, falls es sonst verschwindet)
-        if current_actual_mode == "Light":
-            self.status_label.configure(text_color="black" if self.ser is None else "green")
 
-    
+    def update_button_colors(self):
+        mode = ctk.get_appearance_mode()
+        new_color = "white" if mode == "Dark" else "black"
+        for b in self.btns: b.configure(text_color=new_color)
+
     def setup_settings_tab(self):
-        """Hier wird das Aussehen der GUI angepasst und gespeichert"""
         frame = ctk.CTkFrame(self.tab_settings, fg_color="transparent")
         frame.pack(expand=True)
-
-        ctk.CTkLabel(frame, text="GUI Design & Akzentfarbe", font=("Arial", 24, "bold")).pack(pady=20)
-
-        # 1. Theme Auswahl (Dark/Light)
-        ctk.CTkLabel(frame, text="Modus (Hell/Dunkel):", font=("Arial", 16)).pack(pady=(20, 5))
-        current_mode = ctk.get_appearance_mode()
-        self.theme_menu = ctk.CTkOptionMenu(frame, values=["System", "Dark", "Light"], 
-                                            command=self.change_theme)
-        self.theme_menu.set(current_mode)
+        ctk.CTkLabel(frame, text="Design & Hardware", font=("Arial", 24, "bold")).pack(pady=20)
+        self.theme_menu = ctk.CTkOptionMenu(frame, values=["System", "Dark", "Light"], command=self.change_theme)
         self.theme_menu.pack(pady=10)
-
-        # 2. Akzentfarbe Auswahl
-        ctk.CTkLabel(frame, text="Akzentfarbe (Buttons/Slider):", font=("Arial", 16)).pack(pady=(20, 5))
-        # Standard-Themen von CustomTkinter: "blue", "green", "dark-blue"
-        self.accent_menu = ctk.CTkOptionMenu(frame, values=["blue", "green", "dark-blue"], 
-                                             command=self.change_accent)
-        
-        # Wir versuchen den aktuellen Wert aus den Settings zu laden
-        try:
-            with open(SETTINGS_FILE, "r") as f:
-                saved_accent = json.load(f).get("color_theme", "blue")
-                self.accent_menu.set(saved_accent)
-        except:
-            self.accent_menu.set("blue")
-            
-        self.accent_menu.pack(pady=10)
-
-        ctk.CTkLabel(frame, text="💡 Hinweis: Die Akzentfarbe wird beim nächsten Start aktiv.", 
-                     font=("Arial", 12, "italic"), text_color="gray").pack(pady=20)
-        
-        ctk.CTkLabel(frame, text="Hardware Animation (Pico):", font=("Arial", 16)).pack(pady=(20, 5))
-        
-        self.anim_menu = ctk.CTkOptionMenu(frame, 
-                                           values=["Aus", "Welle", "Atmen"], 
+        self.anim_menu = ctk.CTkOptionMenu(frame, values=["Aus", "Welle", "Atmen", "Scanner", "Blinken"],
                                            command=self.save_anim)
         self.anim_menu.pack(pady=10)
 
     def save_anim(self, v):
-        # Map den Namen auf die Zahl für den Pico
-        mapping = {"Aus": 0, "Welle": 1, "Atmen": 2}
-        anim_id = mapping.get(v, 0)
-        
-        # Sende den Befehl (selected_idx ist hier egal, wir nehmen 0)
-        self.send("SET_ANIM", anim_id)
-        
-        # Speichere die Wahl auch in deiner gui_settings.json
+        mapping = {"Aus": 0, "Welle": 1, "Atmen": 2, "Scanner": 3, "Blinken": 4}
+        self.send("SET_ANIM", mapping.get(v, 0));
         self.save_gui_settings("hardware_animation", v)
 
-    def change_accent(self, new_accent):
-        """Speichert die Akzentfarbe. CustomTkinter benötigt leider einen Neustart dafür."""
-        self.save_gui_settings("color_theme", new_accent)
-        # Optional: Dem User zeigen, dass er neustarten muss
-        self.status_label.configure(text="Akzent gespeichert! Bitte neustarten.", text_color="yellow")
-    # --- LOGIK FUNKTIONEN (Gleich geblieben) ---
-
-
     def auto_connect(self):
-        ports = list(serial.tools.list_ports.comports())
-        for p in ports:
+        for p in serial.tools.list_ports.comports():
             try:
                 test_ser = serial.Serial(p.device, BAUD_RATE, timeout=0.5)
-                time.sleep(0.5)
+                time.sleep(0.5);
                 test_ser.write(b"GET_CONFIG\n")
                 res = test_ser.readline().decode().strip()
                 if res.startswith("CONFIG:"):
                     self.ser = test_ser
                     self.status_label.configure(text=f"Verbunden: {p.device}", text_color="green")
-                    self.load_pico_config_from_data(res)
+                    self.load_pico_config_from_data(res);
                     return
                 test_ser.close()
-            except: continue
+            except:
+                continue
         self.after(2000, self.auto_connect)
 
     def load_pico_config_from_data(self, raw_data):
@@ -288,54 +312,46 @@ class StreamDeckGUI(ctk.CTk):
                     self.btns[i].current_key = REV_KEY.get(int(kc), "F13")
                     self.btns[i].current_color = c_name
                     self.btns[i].current_mod = int(mod)
-                    rgb = COLOR_MAP.get(c_name, (50,50,50))
-                    self.btns[i].configure(fg_color='#%02x%02x%02x' % rgb if c_name != "Aus" else "#3b3b3b", text=ICON_MAP.get(int(kc), "⌨"))
-        except: pass
+                    rgb = COLOR_MAP.get(c_name, (50, 50, 50))
+                    self.btns[i].configure(fg_color='#%02x%02x%02x' % rgb if c_name != "Aus" else "#3b3b3b",
+                                           text=ICON_MAP.get(int(kc), "⌨"))
+        except:
+            pass
 
     def fill_lists(self):
-        # Bestimme Farbe für Listen-Text
-        mode = ctk.get_appearance_mode()
-        l_text_color = "white" if mode == "Dark" else "black"
+        """Verteilt Tasten basierend auf Schlüsselwörtern"""
+        for frame in [self.standard_scroll, self.system_scroll, self.media_scroll]:
+            for widget in frame.winfo_children(): widget.destroy()
 
-        for name, code in sorted(KEY_MAP.items()):
-            parent = self.media_scroll if code in MEDIA_KEYS_CODES else self.standard_scroll
-            btn = ctk.CTkButton(parent, 
-                                text=name, 
-                                fg_color="transparent", 
-                                text_color=l_text_color, # Hier dynamisch
-                                anchor="w", 
-                                command=lambda n=name: self.save_k(n))
+        l_text_color = "white" if ctk.get_appearance_mode() == "Dark" else "black"
+
+        for name in sorted(KEY_MAP.keys()):
+            name_up = name.upper()
+
+            # 1. Check Media
+            if any(k in name_up for k in MEDIA_KEYWORDS):
+                target = self.media_scroll
+            # 2. Check System
+            elif any(k in name_up for k in SYSTEM_KEYWORDS):
+                target = self.system_scroll
+            # 3. Rest ist Standard
+            else:
+                target = self.standard_scroll
+
+            btn = ctk.CTkButton(target, text=name, fg_color="transparent", text_color=l_text_color,
+                                anchor="w", height=24, command=lambda n=name: self.save_k(n))
             btn.pack(fill="x", padx=2, pady=1)
-            self.key_btns[name] = btn
-
-    def select(self, idx):
-        self.selected_idx = idx
-        for i, b in enumerate(self.btns): b.configure(border_width=3 if i==idx else 0, border_color="#1f538d")
-        curr_key = self.btns[idx].current_key
-        self.highlight_key_in_list(curr_key)
-        self.c_menu.set(self.btns[idx].current_color)
-        mod = self.btns[idx].current_mod
-        self.ctrl_var.set(bool(mod & 1)); self.shift_var.set(bool(mod & 2)); self.alt_var.set(bool(mod & 4))
-        if KEY_MAP.get(curr_key, 0) in MEDIA_KEYS_CODES: self.mod_frame.pack_forget()
-        else: self.mod_frame.pack(pady=20, padx=10)
-
-    def highlight_key_in_list(self, key_name):
-        for name, btn in self.key_btns.items(): btn.configure(fg_color="#1f538d" if name == key_name else "transparent")
 
     def save_k(self, v):
         if self.selected_idx is None: return
-        code = KEY_MAP[v]
+        code = KEY_MAP[v];
         self.btns[self.selected_idx].current_key = v
-        self.btns[self.selected_idx].configure(text=ICON_MAP.get(code, "⌨"))
-        self.highlight_key_in_list(v)
-        if code in MEDIA_KEYS_CODES:
-            self.mod_frame.pack_forget(); self.send("SET_MOD", 0); self.btns[self.selected_idx].current_mod = 0
-        else: self.mod_frame.pack(pady=20, padx=10)
+        self.btns[self.selected_idx].configure(text=ICON_MAP.get(code, "⌨"));
         self.send("SET_KEY", code)
 
     def save_mod(self):
         val = (1 if self.ctrl_var.get() else 0) + (2 if self.shift_var.get() else 0) + (4 if self.alt_var.get() else 0)
-        self.btns[self.selected_idx].current_mod = val
+        self.btns[self.selected_idx].current_mod = val;
         self.send("SET_MOD", val)
 
     def save_c(self, v):
@@ -344,14 +360,17 @@ class StreamDeckGUI(ctk.CTk):
         self.btns[self.selected_idx].configure(fg_color='#%02x%02x%02x' % rgb if v != "Aus" else "#3b3b3b")
         self.send("SET_COLOR", v)
 
-    def update_bright(self, v): self.send("SET_BRIGHTNESS", int(v))
+    def update_bright(self, v):
+        self.send("SET_BRIGHTNESS", int(v))
 
     def send(self, cmd, val):
         if self.ser and self.ser.is_open:
-            try: self.ser.write(f"{cmd}:{self.selected_idx}:{val}\n".encode())
-            except: pass
+            try:
+                self.ser.write(f"{cmd}:{self.selected_idx}:{val}\n".encode())
+            except:
+                pass
+
 
 if __name__ == "__main__":
     app = StreamDeckGUI()
     app.mainloop()
-
