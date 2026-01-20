@@ -76,3 +76,5 @@ COLOR_MAP = {
 
 
 REVERSE_MAP = {v: k for k, v in KEY_MAP.items()}
+
+MEDIA_KEYS_CODES = [127, 128, 129, 205, 206, 207, 181, 111, 112]
