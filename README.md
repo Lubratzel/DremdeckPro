@@ -55,7 +55,7 @@ The current prototype features a compact hex-style button layout
 with custom keycaps and a minimal enclosure.
 
 <p align="center">
-  <img src="assets/dreamdeck_top.jpg" width="400" />
+  <img src="assets/DreamDeckCloseUp.png" width="400" />
 </p>
 
 ---
