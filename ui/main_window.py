@@ -16,6 +16,10 @@ from config.colors import (
     THEMES
 )
 
+from config.systemConfig import (
+    ANIM_SPEED
+)
+
 from ui.sidebar import NavSidebar
 
 from ui.components.settings_tab import SettingsTab
@@ -69,6 +73,7 @@ class StreamDeckGUI(ctk.CTk):
             on_change_theme=self.change_theme,
             on_change_accent=self.change_accent,
             on_save_anim=self.save_anim,
+            update_speed=self.update_ani_speed
         )
         self.tab_settings = self.settings_tab
 
@@ -76,6 +81,7 @@ class StreamDeckGUI(ctk.CTk):
         self.show_profile()
         self.after(100, self.auto_connect)
 
+    
   
     @property
     def btns(self):
@@ -202,9 +208,16 @@ class StreamDeckGUI(ctk.CTk):
         except Exception:
             pass
 
-    def send(self, cmd: str, val):
-        self.serial.send(cmd, self.selected_idx, val)
-
+    def send(self, cmd, idx, val):
+        # Wir prüfen, ob der SerialHandler verbunden ist
+        if self.serial.is_connected:
+            try:
+                # Das Format für den Pico: "BEFEHL:INDEX:WERT\n"
+                msg = f"{cmd}:{idx}:{val}\n"
+                # Wir nutzen die write-Methode deines SerialHandlers
+                self.serial.ser.write(msg.encode())
+            except Exception as e:
+                print(f"Sende-Fehler: {e}")
     # -------------------------
     # Lists / Selection / Save
     # -------------------------
@@ -241,10 +254,9 @@ class StreamDeckGUI(ctk.CTk):
         for name, btn in self.key_btns.items():
             btn.configure(fg_color=CTK_ACCENT_DEFAULT if name == key_name else "transparent")
 
-    def save_k(self, v: str):
-        if self.selected_idx is None:
-            return
-
+    def save_k(self, v): 
+        if self.selected_idx is None: return
+        
         code = KEY_MAP[v]
         self.btns[self.selected_idx].current_key = v
         self.btns[self.selected_idx].configure(text=ICON_MAP.get(code, "⌨"))
@@ -252,28 +264,26 @@ class StreamDeckGUI(ctk.CTk):
 
         if code in MEDIA_KEYS_CODES:
             self.profile_tab.show_mod_frame(False)
-            self.send("SET_MOD", 0)
+            self.send("SET_MOD", self.selected_idx, 0) # Index hinzugefügt
             self.btns[self.selected_idx].current_mod = 0
         else:
             self.profile_tab.show_mod_frame(True)
 
-        self.send("SET_KEY", code)
+        self.send("SET_KEY", self.selected_idx, code) # Einmalig mit korrekten Argumenten
 
     def save_mod(self):
-        if self.selected_idx is None:
-            return
+        if self.selected_idx is None: return
+        val = ( (1 if self.profile_tab.ctrl_var.get() else 0) + 
+                (2 if self.profile_tab.shift_var.get() else 0) + 
+                (4 if self.profile_tab.alt_var.get() else 0) )
 
-        val = (
-            (1 if self.profile_tab.ctrl_var.get() else 0)
-            + (2 if self.profile_tab.shift_var.get() else 0)
-            + (4 if self.profile_tab.alt_var.get() else 0)
-        )
         self.btns[self.selected_idx].current_mod = val
-        self.send("SET_MOD", val)
+        # Korrektur: idx hinzufügen
+        self.send("SET_MOD", self.selected_idx, val)
 
     def save_c(self, v: str):
-        if self.selected_idx is None:
-            return
+        if self.selected_idx is not None:
+            self.send("SET_COLOR", self.selected_idx, v)
 
         self.btns[self.selected_idx].current_color = v
         rgb = COLOR_MAP.get(v, (50, 50, 50))
@@ -282,10 +292,25 @@ class StreamDeckGUI(ctk.CTk):
         self.send("SET_COLOR", v)
 
     def update_bright(self, v):
-        self.send("SET_BRIGHTNESS", int(v))
+        self.send("SET_BRIGHTNESS", 0, int(v))
 
     def save_anim(self, v: str):
         mapping = ANI_OPT
         anim_id = mapping.get(v, 0)
-        self.send("SET_ANIM", anim_id)
+        # Korrektur: idx 0 für globale Animation hinzufügen
+        self.send("SET_ANIM", 0, anim_id) 
         self.save_gui_settings("hardware_animation", v)
+
+    def update_ani_speed(self, v):
+        ms_value = int(float(v) * 1000) 
+        self.send("SET_SPEED", 0, ms_value)
+
+    def on_program_start(self):
+    # Board beim Start auf den Wert aus der Config setzen
+        ms_value = int(config.ANIM_SPEED * 1000)
+        self.send("SET_SPEED", 0, ms_value)
+
+    def update_ani_speed(self, v):
+        # Wert ans Board senden, wenn der Slider bewegt wird
+        ms_value = int(float(v) * 1000)
+        self.send("SET_SPEED", 0, ms_value)
