@@ -1,3 +1,16 @@
+# Python
 __pycache__/
+*.pyc
+*.pyo
+
+# Build / Output
+build/
+dist/
+
+# Config / Local settings
 gui_settings.json
-gui_settings.json
+.env
+
+# OS
+.DS_Store
+Thumbs.db
