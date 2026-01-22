@@ -1,4 +1,7 @@
-<h1 align="center">DreamDeck 🎛️</h1>
+<h1 align="center">
+  DreamDeck&nbsp;
+  <img src="assets/app_icon.ico" width="28" style="vertical-align: middle;" />
+</h1>
 
 <p align="center">
   A custom-built macro controller combining <b>Python</b>, <b>embedded hardware</b> and a clean, minimal design.
